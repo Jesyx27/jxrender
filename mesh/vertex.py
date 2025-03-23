@@ -2,59 +2,104 @@ import math
 import pygame
 import numpy as np
 
+def euler_to_rotation_matrix(pitch, yaw, roll):
+    """
+    Convert Euler angles (pitch, yaw, roll) into a 3x3 rotation matrix.
+    Angles should be given in **radians**.
+    """
+    # Rotation around X-axis (Pitch)
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(pitch), -np.sin(pitch)],
+        [0, np.sin(pitch), np.cos(pitch)]
+    ])
+    
+    # Rotation around Y-axis (Yaw)
+    Ry = np.array([
+        [np.cos(yaw), 0, np.sin(yaw)],
+        [0, 1, 0],
+        [-np.sin(yaw), 0, np.cos(yaw)]
+    ])
+    
+    # Rotation around Z-axis (Roll)
+    Rz = np.array([
+        [np.cos(roll), -np.sin(roll), 0],
+        [np.sin(roll), np.cos(roll), 0],
+        [0, 0, 1]
+    ])
+
+    # Combine rotations: R = Rz * Ry * Rx (applied in ZYX order)
+    return Rz @ Ry @ Rx
+
+
 class Vertex:
-    def __init__(self, x, y, z, coordinate_system="global") -> None:
+    def __init__(self, position, coordinate_system="global") -> None:
         self.coordinate_system = coordinate_system
-        self.x = x
-        self.y = y
-        self.z = z
+        self.position = position
     
     def __str__(self) -> str:
-        return f"Vertex({self.x}, {self.y}, {self.z})"
+        return f"Vertex({self.position.x}, {self.position.y}, {self.position.z})"
     
     def __repr__(self) -> str:
         return self.__str__()
 
     def _pos_on_screen(self, camera, w, h):
-        # Translate vertex relative to camera position
-        rel_x = self.x - camera.position.x
-        rel_y = self.y - camera.position.y
-        rel_z = self.z - camera.position.z
-        
-        # Rotate around X-axis
-        temp_y = rel_y * np.cos(camera.rotation.x) - rel_z * np.sin(camera.rotation.x)
-        temp_z = rel_y * np.sin(camera.rotation.x) + rel_z * np.cos(camera.rotation.x)
-        rel_y, rel_z = temp_y, temp_z
-        
-        # Rotate around Y-axis
-        temp_x = rel_x * np.cos(camera.rotation.y) + rel_z * np.sin(camera.rotation.y)
-        temp_z = -rel_x * np.sin(camera.rotation.y) + rel_z * np.cos(camera.rotation.y)
-        rel_x, rel_z = temp_x, temp_z
-        
-        # Rotate around Z-axis
-        temp_x = rel_x * np.cos(camera.rotation.z) - rel_y * np.sin(camera.rotation.z)
-        temp_y = rel_x * np.sin(camera.rotation.z) + rel_y * np.cos(camera.rotation.z)
-        rel_x, rel_y = temp_x, temp_y
-        
-        # Avoid division by zero (if vertex is behind camera)
-        if rel_z <= 0:
-            return None  # Vertex is behind the camera
-        
-        # Perspective projection
-        fov_factor = math.tan(math.radians(camera.fov) / 2)
-        screen_x = (rel_x / (rel_z * fov_factor)) * (w / 2) + (w / 2)
-        screen_y = (rel_y / (rel_z * fov_factor)) * (h / 2) + (h / 2)
-        
-        return screen_x, screen_y
-    
-    def distance_to_camera(self, camera):
-        dx = self.x - camera.position.x
-        dy = self.y - camera.position.y
-        dz = self.z - camera.position.z
+        aspect_ratio = w / h
+        near = camera.near
+        far = camera.far
+        f = 1 / np.tan(np.radians(camera.fov) / 2)
 
-        return math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+        # Projection matrix (Perspective Projection)
+        projection_matrix = np.array([
+            [f / aspect_ratio, 0, 0, 0],
+            [0, f, 0, 0],
+            [0, 0, (far + near) / (near - far), (2 * far * near) / (near - far)],
+            [0, 0, -1, 0]
+        ])
+
+        # Convert point to numpy array
+        point = np.array([self.position.x, self.position.y, self.position.z])
+
+        # Transform point to camera space
+        relative_pos = point - np.array([camera.position.x, camera.position.y, camera.position.z])
+
+        # Convert Euler angles to rotation matrix
+        rotation_matrix = camera.rotation.get_rotation_matrix()
+
+        # Rotate into camera space
+        camera_space_point = rotation_matrix @ relative_pos
+
+        # Convert to homogeneous coordinates (4D)
+        x, y, z = camera_space_point
+        if z <= 0:  # Ignore points behind the camera
+            return None  
+
+        homogeneous_point = np.array([x, y, z, 1])
+        projected = projection_matrix @ homogeneous_point
+
+        # Normalize by w
+        if projected[3] == 0:
+            return None  
+
+        ndc_x = projected[0] / projected[3]
+        ndc_y = projected[1] / projected[3]
+
+        # Convert to screen space
+        screen_x = (ndc_x + 1) * 0.5 * w
+        screen_y = (1 - ndc_y) * 0.5 * h
+
+        return screen_x, screen_y
+
 
     def draw(self, sheet, camera):
+        """ Draws the vertex as a small circle on the screen if it's visible. """
         screen_pos = self._pos_on_screen(camera, sheet.get_width(), sheet.get_height())
         if screen_pos:
             pygame.draw.circle(sheet, (255, 255, 255), (int(screen_pos[0]), int(screen_pos[1])), 2)
+
+
+class Normal:
+    def __init__(self, x, y, z) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
